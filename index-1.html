@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Le mie liste</title>
+<style>
+:root{--bg:#f2f5f3;--card:#fff;--ink:#1d2b2a;--mute:#6b7a78;--acc:#2a6f8e;--line:#d9e1de;--ok:#8aa39c}
+@media (prefers-color-scheme:dark){:root{--bg:#141b1a;--card:#1d2726;--ink:#e8f0ee;--mute:#92a5a2;--acc:#6bb4d3;--line:#2e3b39;--ok:#5d7570}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 Georgia,"Times New Roman",serif;padding:16px;max-width:560px;margin-inline:auto}
+h1{font-size:26px;margin:8px 0 14px}
+.tabs{display:flex;gap:8px;overflow-x:auto;padding-bottom:8px}
+.tab{flex:none;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:20px;padding:8px 14px;font:inherit;cursor:pointer}
+.tab.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.box{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+input{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;flex:1;min-width:0}
+input[type=datetime-local]{flex:none;width:100%}
+button.go{font:inherit;background:var(--acc);color:#fff;border:0;border-radius:8px;padding:10px 16px;cursor:pointer}
+button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+ul{list-style:none;margin:0;padding:0}
+li{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+li:last-child{border:0}
+li input[type=checkbox]{flex:none;width:22px;height:22px;accent-color:var(--acc)}
+.t{flex:1}
+.d{display:block;font-size:13px;color:var(--mute)}
+.done .t{text-decoration:line-through;color:var(--ok)}
+.x{background:none;border:0;color:var(--mute);font-size:20px;cursor:pointer;padding:4px 8px}
+.empty,.msg{color:var(--mute);padding:8px 0}
+.msg.err{color:#c0392b}
+.link{background:none;border:0;color:var(--mute);font:inherit;text-decoration:underline;cursor:pointer;margin:12px 16px 0 0;padding:0}
+.share{background:none;border:1px solid var(--acc);color:var(--acc);border-radius:8px;padding:10px 16px;font:inherit;cursor:pointer;margin-top:12px}
+</style>
+</head>
+<body>
+<h1>Le mie liste</h1>
+<div class="tabs" id="tabs"></div>
+<div class="box row">
+  <input id="newList" placeholder="Nome della nuova lista">
+  <button class="go" id="addList">Crea lista</button>
+</div>
+<div id="msg" class="msg"></div>
+<div class="box" id="current"></div>
+
+<script>
+const URL_DB = "https://autmdwcvswbglcbjenxb.supabase.co";
+const KEY = "sb_publishable_pr0fW86xla2ZITeI9mc4cA_BWMUODOS";
+
+let mine = [];   // le mie liste: [{id, nome}]
+let cur = null;  // id della lista aperta
+let items = [];  // voci della lista aperta
+
+try { mine = JSON.parse(localStorage.getItem("mie-liste-v2")) || []; } catch (e) {}
+function saveMine() { try { localStorage.setItem("mie-liste-v2", JSON.stringify(mine)); } catch (e) {} }
+
+async function api(path, opt = {}) {
+  const r = await fetch(URL_DB + "/rest/v1/" + path, {
+    ...opt,
+    headers: { apikey: KEY, "Content-Type": "application/json", Prefer: "return=representation", ...(opt.headers || {}) }
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.status === 204 ? null : r.json();
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function fmt(v) { return new Date(v).toLocaleString("it-IT", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); }
+function msg(t, err) { const m = document.getElementById("msg"); m.textContent = t || ""; m.className = "msg" + (err ? " err" : ""); }
+function curList() { return mine.find(l => l.id === cur); }
+
+function renderTabs() {
+  document.getElementById("tabs").innerHTML = mine.map(l =>
+    `<button class="tab ${l.id === cur ? "on" : ""}" data-l="${l.id}">${esc(l.nome)}</button>`).join("");
+}
+function renderShell() {
+  renderTabs();
+  const c = curList(), box = document.getElementById("current");
+  if (!c) { box.innerHTML = `<p class="empty">Non hai ancora liste. Scrivi un nome qui sopra e premi Crea lista.</p>`; return; }
+  box.innerHTML = `
+    <div class="row"><input id="newItem" placeholder="Aggiungi una voce a ${esc(c.nome)}">
+    <input id="newWhen" type="datetime-local" aria-label="Promemoria (facoltativo)">
+    <button class="go" id="addItem">Aggiungi voce</button></div>
+    <ul id="items"></ul>
+    <button class="share" id="share">Condividi questa lista</button>
+    <button class="link" id="leave">Rimuovi dalle mie liste</button>`;
+  renderItems();
+}
+function renderItems() {
+  const ul = document.getElementById("items"); if (!ul) return;
+  ul.innerHTML = items.length ? items.map(i => `<li class="${i.fatto ? "done" : ""}">
+    <input type="checkbox" data-c="${i.id}" ${i.fatto ? "checked" : ""} aria-label="Fatto">
+    <span class="t">${esc(i.testo)}${i.quando ? `<span class="d">Promemoria: ${fmt(i.quando)}</span>` : ""}</span>
+    <button class="x" data-x="${i.id}" aria-label="Elimina voce">×</button></li>`).join("")
+    : `<li class="empty">Questa lista è vuota. Scrivi la prima voce qui sopra.</li>`;
+}
+async function load() {
+  if (!cur) return;
+  try { items = await api(`voci?lista_id=eq.${cur}&select=*&order=creata.asc`); renderItems(); msg(""); }
+  catch (e) { msg("Non riesco a collegarmi al database. Riprova tra poco.", true); }
+}
+async function open(id) { cur = id; items = []; renderShell(); await load(); }
+
+document.addEventListener("click", async e => {
+  const t = e.target;
+  try {
+    if (t.dataset.l) { open(t.dataset.l); }
+    else if (t.id === "addList") {
+      const n = document.getElementById("newList").value.trim(); if (!n) return;
+      const r = await api("liste", { method: "POST", body: JSON.stringify({ nome: n }) });
+      mine.push({ id: r[0].id, nome: r[0].nome }); saveMine();
+      document.getElementById("newList").value = ""; open(r[0].id);
+    } else if (t.id === "addItem") {
+      const testo = document.getElementById("newItem").value.trim(); if (!testo) return;
+      const w = document.getElementById("newWhen").value;
+      const r = await api("voci", { method: "POST", body: JSON.stringify({ lista_id: cur, testo, quando: w ? new Date(w).toISOString() : null }) });
+      items.push(r[0]); renderShell();
+    } else if (t.dataset.c) {
+      const i = items.find(x => x.id === t.dataset.c); i.fatto = t.checked; renderItems();
+      await api(`voci?id=eq.${i.id}`, { method: "PATCH", body: JSON.stringify({ fatto: t.checked }) });
+    } else if (t.dataset.x) {
+      items = items.filter(x => x.id !== t.dataset.x); renderItems();
+      await api(`voci?id=eq.${t.dataset.x}`, { method: "DELETE" });
+    } else if (t.id === "share") {
+      const c = curList(), link = location.origin + location.pathname + "?lista=" + cur;
+      if (navigator.share) { navigator.share({ title: c.nome, text: "Ti invito nella lista " + c.nome, url: link }).catch(() => {}); }
+      else { await navigator.clipboard.writeText(link); msg("Link copiato. Incollalo in un messaggio per i tuoi amici."); }
+    } else if (t.id === "leave") {
+      if (confirm("Rimuovere questa lista dal tuo elenco? Resta visibile a chi ha il link.")) {
+        mine = mine.filter(l => l.id !== cur); saveMine();
+        cur = mine.length ? mine[0].id : null; items = []; renderShell(); load();
+      }
+    }
+  } catch (err) { msg("Qualcosa non ha funzionato. Riprova.", true); }
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Enter" && e.target.id === "newItem") document.getElementById("addItem").click();
+  if (e.key === "Enter" && e.target.id === "newList") document.getElementById("addList").click();
+});
+
+(async function start() {
+  const p = new URLSearchParams(location.search).get("lista");
+  if (p) {
+    try {
+      const r = await api(`liste?id=eq.${encodeURIComponent(p)}&select=id,nome`);
+      if (r.length && !mine.some(l => l.id === r[0].id)) { mine.push(r[0]); saveMine(); }
+      if (r.length) cur = r[0].id; else msg("Questa lista non esiste più.", true);
+    } catch (e) { msg("Link non valido.", true); }
+    history.replaceState(null, "", location.pathname);
+  }
+  if (!cur && mine.length) cur = mine[0].id;
+  renderShell(); load();
+  setInterval(() => { if (!document.hidden) load(); }, 10000);
+})();
+</script>
+</body>
+</html>
